@@ -1,12 +1,25 @@
 #!/bin/sh
 # The worst package manager you'll ever use.
 
-REPO_BASE="$(pwd)/repo"
-DATABASE="$(pwd)/db"
-LIBC="musl"
+DATABASE="$(pwd)/db" # $(pwd) is for testing
+REPO_BASE="$DATABASE/repo"
+
+# TODO: phase out in favour of a file that lists packages that every package
+# should expect
+ESSENTIALS="musl"
 
 is_installed() {
+	# the easiest way to do this is to check if it's in the file list
 	[ -e "$DATABASE/filelist/$1" ]
+}
+
+get_version() {
+	# lets just grep $DATABASE/state
+	# i wish i could escape $1 but i'm not trying
+	result=$(grep "^$1" < "$DATABASE/state")
+
+	# remove everything before the space
+	printf '%s' "${result##* }"
 }
 
 read_depends() {
@@ -14,14 +27,20 @@ read_depends() {
 	location="$REPO_BASE/$package"
 	depends=""
 
+	# every package is guarenteed to depend on $ESSENTIALS
+	printf '%s\n' "$ESSENTIALS"
+
+	# just stop here if there's no dependencies
+	# assume it wants $ESSENTIALS and quit
 	if [ ! -e "$location/depends" ]; then
 		return
 	fi
 
-	printf '%s\n' "$LIBC"
-
+	# lets read the dependency file
 	while read -r line || [ -n "$line" ]; do
-		pass1="${line%% *}"
+		pass1="${line%% *}" # discard everything after a space
+
+		# same thing but with tabs, and we print it
 		printf '%s\n' "${pass1%%	*}"
 	done < "$location/depends"
 }
@@ -29,15 +48,28 @@ read_depends() {
 resolve_depends() {
 	package="$1"
 
+	# return if this is an essential package
+	# it WILL result in an infinite loop
+	case $ESSENTIALS in
+		*$package*)
+			return
+			;;
+	esac
+
 	# first pass: get all dependencies
 	toplevel="$(read_depends "$package")"
 	depends=""
 	for dep in $toplevel; do
 		resolved="$(resolve_depends "$dep")"
-		depends="${depends:+$depends }${resolved:+$resolved }$dep"
+
+		# i would use the ${VAR:+string} syntax but we're processing it
+		# later, so we don't need to
+		depends="$depends $resolved $dep"
 	done
 
-	# second pass: remove duplicates, check if we already have them installed, remove
+	# second pass: remove duplicates, check if we already have them
+	# installed, and remove them if we do
+	# otherwise just add it to the list
 	final=""
 	for dep in $depends; do
 		case $final in
@@ -45,7 +77,12 @@ resolve_depends() {
 				# do nothing
 				;;
 			*)
+				# add to list if it's not installed
 				if ! is_installed "$dep"; then
+					# this is the magical :+ syntax i was
+					# talking about earlier
+					# it allows us to join strings in an
+					# intuitive way
 					final="${final:+$final }$dep"
 				fi
 				;;
