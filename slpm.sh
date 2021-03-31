@@ -8,9 +8,34 @@ REPO_BASE="$DATABASE/repo"
 # should expect
 ESSENTIALS="musl"
 
+# { Logging
+log_left=""
+log_mid="->\t"
+log_right=""
+log () {
+	# usage: log <left column> <message>
+	# goes to stderr
+	printf "%b%s%b%s%b\n" "$log_left" "$1" "$log_mid" "$2" "$log_right" >&2
+}
+
+info () {
+	log "info" "$@"
+}
+
+error () {
+	log "error" "$@"
+}
+# }
+
+# { Package information
 is_installed() {
 	# the easiest way to do this is to check if it's in the file list
 	[ -e "$DATABASE/filelist/$1" ]
+}
+
+is_package() {
+	# see if it exists in $DATABASE/repo
+	[ -d "$DATABASE/repo/$1" ]
 }
 
 get_version() {
@@ -44,6 +69,7 @@ read_depends() {
 		printf '%s\n' "${pass1%%	*}"
 	done < "$location/depends"
 }
+# }
 
 resolve_depends() {
 	package="$1"
@@ -92,4 +118,11 @@ resolve_depends() {
 	printf '%s' "${final}"
 }
 
+# main code starts here
+
+# exit on error
+set -e
+
+# set colors if need be
+[ "$USE_COLOR" = 1 ] && log_left="\033[1;97m" log_mid="\033[0m\033[0;97m" log_right="\033[0m"
 resolve_depends nano
