@@ -1,7 +1,8 @@
 #!/bin/sh
 # The worst package manager you'll ever use.
 
-DATABASE="$(pwd)/db" # $(pwd) is for testing
+ROOT="$(pwd)/root"
+DATABASE="$ROOT/var/db/slpm" # $(pwd) is for testing
 REPO_BASE="$DATABASE/repo"
 
 TEMP="" # used for when we exit
@@ -9,7 +10,7 @@ ERR="" # used for error details
 
 # TODO: phase out in favour of a file that lists packages that every package
 # should expect
-ESSENTIALS="musl"
+#ESSENTIALS="musl"
 
 # { Logging
 log_left=""
@@ -49,7 +50,7 @@ get_version() {
 get_installed_version() {
 	# lets just grep $DATABASE/state
 	# i wish i could escape $1 but i'm not trying
-	result=$(grep "^$1" < "$DATABASE/state")
+	result=$(grep "^$1" < "$DATABASE/state" ||:)
 
 	# remove everything before the space
 	printf '%s' "${result##* }"
@@ -142,6 +143,44 @@ read_depends() {
 		# same thing but with tabs, and we print it
 		printf '%s\n' "${pass1%%	*}"
 	done < "$location/depends"
+}
+
+check_owner_of() {
+	# usage: check_owner_of <file>
+	# gets the owner of a file, or returns nothing if there is none
+	file="$1"
+
+	set +f
+	for pkg in "$DATABASE"/filelist/*; do
+		result="$(grep "^$file:" "$pkg" ||:)"
+		if [ -n "$result" ]; then
+			printf '%s' "$pkg"
+			return
+		fi
+	done
+	set -f
+}
+
+get_packaged_hash() {
+	# usage: get_packaged_hash <file>
+	# gets the hash to a file according to the current database
+	# this hash is always whatever it was when we installed it
+
+	file="$1"
+
+	set +f
+	for pkg in "$DATABASE"/filelist/*; do
+		result="$(grep "^$file:" "$pkg" ||:)"
+		if [ -n "$result" ]; then
+			# we could do this better
+			IFS=":" read -r file hash perms owner group <<EOF
+$result
+EOF
+			printf '%s' "$hash"
+			return
+		fi
+	done
+	set -f
 }
 # }
 
@@ -237,6 +276,7 @@ build() {
 	package="$1"
 	builddir="$2"
 	here="$(pwd)"
+	version=$(get_version "$package")
 
 	echo "entering build environment"
 	(
@@ -276,10 +316,209 @@ build() {
 		fi
 
 		cd "$builddir/out"
-		tar -czf "$here/$package-$(get_version "$package").tar.gz" .
+
+		# make .manifest
+		# tl;dr hash all files, save permissions
+		hashes=""
+		while read -r line; do
+			file="${line##./}"
+			_hash="$(sha256sum -b "$file")"
+			hash="${_hash%% *}"
+
+			# this is probably overengineered
+			perms="$(stat -c %a "$file")"
+			owner="$(stat -c %u "$file")"
+			group="$(stat -c %g "$file")"
+
+			hashes="${hashes:+$hashes
+}$file:$hash:$perms:$owner:$group"
+		done <<EOF
+$(find . -mindepth 1 -type f)
+EOF
+
+		# get all directories
+		while read -r line; do
+			file="${line##./}"
+
+			# this is probably overengineered
+			perms="$(stat -c %a "$file")"
+			owner="$(stat -c %u "$file")"
+			group="$(stat -c %g "$file")"
+
+			hashes="${hashes:+$hashes
+}$file:d:$perms:$owner:$group"
+		done <<EOF
+$(find . -mindepth 1 -type d)
+EOF
+
+		echo "$hashes" > .manifest
+
+		# make .info file
+		echo "$package $version" > .info
+
+		tar -czf "$here/$package-$version.tar.gz" .
 	)
 
 	rm -r "$builddir"
+}
+
+remove_package_files() {
+	# usage: remove_package_files <package>
+	# removes all files if not modified, deletes empty directories
+
+	while IFS=":" read -r file hash perms owner group; do
+		if [ "$hash" = "d" ]; then
+			rmdir "$ROOT"/"$file" 2>/dev/null ||:
+			continue
+		fi
+
+		_hash="$(sha256sum -b "$TEMP/$file" ||:)"
+		thash="${_hash%% *}"
+
+		if [ "$hash" = "$thash" ]; then
+			# not modified
+			rm -f "$file" ||:
+		fi
+	done < "$DATABASE"/filelist/"$1"
+}
+
+install_package() {
+	# usage: install_package <path to tarball>
+	package_tar="$1"
+
+	if [ ! -e "$1" ]; then
+		ERR="file doesn't exist"
+		return
+	fi
+
+	# get a temporary directory
+	TEMP="$(mktemp -d -t --suffix=-"$package_tar" slpm.XXXXXX)"
+
+	# extract to it
+	tar -xpf "$package_tar" -C "$TEMP"
+
+	# read some basic info
+	package=""
+	version=""
+	IFS=" " read -r package version < "$TEMP/.info"
+
+	# lets verify hashes, check for conflicts
+	# we aren't dealing with files that aren't in the manifest, we don't copy them anyway
+	badhashes=""
+	conflicts=""
+	notfound=""
+	while IFS=":" read -r file hash perms owner group; do
+		# TODO: this could go outside of where we want it to be
+		if [ "$hash" == "d" ]; then continue; fi
+
+		if [ -e "$TEMP/$file" ]; then
+			_hash="$(sha256sum -b "$TEMP/$file")"
+			thash="${_hash%% *}"
+			if [ "$thash" != "$hash" ]; then
+				echo "$file: hashes don't match"
+				echo "expected: $hash"
+				echo "got: $thash"
+				badhashes="${badhashes:+$badhashes }$file"
+				echo
+			fi
+
+			if [ -e "$ROOT/$file" ]; then
+				# TODO: protect files from $ESSENTIALS, some etc files like passwd
+
+				# if it's the same, check if someone else owns it
+				owner="$(check_owner_of "$file")"
+				if [ -n "$owner" ] && [ "$owner" != "$package" ]; then
+					echo "$file: owned by $owner"
+				fi
+
+				case $ESSENTIALS in
+					*$owner*)
+						echo "...which is an essential package."
+						echo "quitting while we're ahead"
+						ERR="$file is from essential package $owner"
+						return
+						;;
+				esac
+
+				# TODO: skip over this if it's owned by another package
+				# check if it's the same
+				_ehash="$(sha256sum -b "$ROOT"/"$file")"
+				ehash="${_ehash%% *}"
+
+				# otherwise, error
+				oldhash="$(get_packaged_hash "$file")"
+				if [ "$oldhash" != "$ehash" ]; then
+					# this is where the threesome of files come in
+					# if current != old, ask if we should choose current or new
+					# but that is TODO
+					echo "$file: exists on disk, hashes differ"
+					echo "old hash: $oldhash"
+					echo "current hash: $ehash"
+					echo "new hash: $thash"
+					ERR="hash mismatch on $file"
+					return
+				fi
+			fi
+		else
+			# TODO: file doesn't exist
+			echo "$file: doesn't exist"
+			notfound="${notfound:+$notfound }$file"
+		fi
+	done < "$TEMP"/.manifest
+
+	# lets move files
+	# create directories first
+	while IFS=":" read -r file hash perms owner group; do
+		if [ "$hash" = "d" ] && [ ! -d "$ROOT"/"$file" ]; then
+			mkdir "$ROOT"/"$file"
+			chmod "$perms" "$ROOT"/"$file"
+			chown "$owner" "$ROOT"/"$file"
+			chgrp "$group" "$ROOT"/"$file"
+		fi
+	done < "$TEMP"/.manifest
+
+	# move files
+	while IFS=":" read -r file hash perms owner group; do
+		if [ "$hash" != "d" ]; then
+			# TODO: we don't check if files collide here
+			mv -vf "$TEMP"/"$file" "$ROOT"/"$file"
+			chmod "$perms" "$ROOT"/"$file"
+			chown "$owner" "$ROOT"/"$file"
+			chgrp "$group" "$ROOT"/"$file"
+		fi
+	done < "$TEMP"/.manifest
+
+	if is_installed "$package"; then
+		# remove old files
+		remove_package_files "$package"
+
+		# >inb4 don't repeat yourself
+		tar -xpf "$package_tar" -C "$TEMP" 2>/dev/null ||:
+
+		# lets move files
+		# create directories first
+		while IFS=":" read -r file hash perms owner group; do
+			if [ "$hash" = "d" ] && [ ! -d "$ROOT"/"$file" ]; then
+				mkdir "$ROOT"/"$file"
+				chmod "$perms" "$ROOT"/"$file"
+				chown "$owner" "$ROOT"/"$file"
+				chgrp "$group" "$ROOT"/"$file"
+			fi
+		done < "$TEMP"/.manifest
+
+		# move files
+		while IFS=":" read -r file hash perms owner group; do
+			if [ "$hash" != "d" ]; then
+				# TODO: we don't check if files collide here
+				mv -vf "$TEMP"/"$file" "$ROOT"/"$file"
+				chmod "$perms" "$ROOT"/"$file"
+				chown "$owner" "$ROOT"/"$file"
+				chgrp "$group" "$ROOT"/"$file"
+			fi
+		done < "$TEMP"/.manifest
+	fi
+
+	cp -v "$TEMP"/.manifest "$DATABASE"/filelist/"$package"
 }
 
 # main code starts here
@@ -290,9 +529,9 @@ set -ef
 # set colors if need be
 [ "$USE_COLOR" = 1 ] && log_left="\033[1;97m" log_mid="\033[0m\033[0;97m" log_right="\033[0m"
 
-for dep in $(resolve_depends nano) nano; do
+for dep in $(resolve_depends zlib) zlib; do
 	echo "building $dep"
-	if is_installed "$dep"; then continue; fi
+	#if is_installed "$dep"; then continue; fi
 
 	builddir="$(make_build_env "$dep")"
 
@@ -311,5 +550,6 @@ for dep in $(resolve_depends nano) nano; do
 		printf 'downloaded %s\n' "$(get_source_size "$dep" "$link")"
 	done
 
-	build "$dep" "$builddir"
+#	build "$dep" "$builddir"
+	install_package "$dep-$(get_version "$dep").tar.gz"
 done
