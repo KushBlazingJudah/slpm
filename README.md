@@ -11,7 +11,7 @@ It wasn't great, no, but it worked. And now I want to do it right.
 
 ## TODO
 - [X] Dependency resolution (should be done)
-- [ ] Downloading files (and verifying them)
+- [X] Downloading files (and verifying them)
 - [ ] Building
 - [ ] Dependency detection (ldd)
 - [ ] Installing
