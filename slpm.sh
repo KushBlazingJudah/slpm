@@ -42,6 +42,11 @@ is_package() {
 }
 
 get_version() {
+	read -r line < "$REPO_BASE/$1/version"
+	printf '%s' "$line"
+}
+
+get_installed_version() {
 	# lets just grep $DATABASE/state
 	# i wish i could escape $1 but i'm not trying
 	result=$(grep "^$1" < "$DATABASE/state")
@@ -67,7 +72,7 @@ get_source_destname() {
 			continue
 		fi
 
-		if [ -n "$destname" -a "$destname" != "-" ]; then
+		if [ -n "$destname" ] && [ "$destname" != "-" ]; then
 			printf '%s\n' "$destname"
 			return
 		fi
@@ -238,9 +243,13 @@ build() {
 		cd "$builddir/src"
 		echo "extracting archives"
 
-		for file in $(ls --color=never -1 "$builddir/src"); do # sorry
+		# enable globs temporarily
+		set +f
+		for file in *; do
 			echo "checking $file"
 			[ -e "$file" ] || [ -L "$file" ] || continue
+			# this is a beautiful function that i stole from my .profile
+			# it was stolen earlier from somewhere else
 			case "$file" in
 				*.tar.bz2)   tar xjf "$file"     ;;
 				*.tar.gz)    tar xzf "$file"     ;;
@@ -254,20 +263,20 @@ build() {
 				*.zip)       unzip "$file"       ;;
 				*.Z)         uncompress "$file"  ;;
 				*.7z)        7z x "$file"    ;;
-				*)           echo "'$file' cannot be extracted via extract()" ;;
+				*)           ;; # fail quietly
 			esac
 		done
+		set -f
 
 		echo "building"
-		PKGSRC="$(pwd)" PKGOUT="$builddir/out" sh -e -- "$REPO_BASE/$package/build"
-		if [ "$?" != 0 ]; then
+		if ! PKGSRC="$(pwd)" PKGOUT="$builddir/out" sh -e -- "$REPO_BASE/$package/build"; then
 			error "$package" "Build failed!"
 			error "$package" "Directory: $builddir"
 			exit 1
 		fi
 
 		cd "$builddir/out"
-		tar -czf "$here/$package.tar.gz" .
+		tar -czf "$here/$package-$(get_version "$package").tar.gz" .
 	)
 
 	rm -r "$builddir"
@@ -281,7 +290,6 @@ set -ef
 # set colors if need be
 [ "$USE_COLOR" = 1 ] && log_left="\033[1;97m" log_mid="\033[0m\033[0;97m" log_right="\033[0m"
 
-echo
 for dep in $(resolve_depends nano) nano; do
 	echo "building $dep"
 	if is_installed "$dep"; then continue; fi
