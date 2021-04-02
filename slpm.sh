@@ -372,14 +372,19 @@ remove_package_files() {
 			continue
 		fi
 
-		_hash="$(sha256sum -b "$TEMP/$file" ||:)"
+		_hash="$(sha256sum -b "$ROOT/$file" 2>/dev/null ||:)"
 		thash="${_hash%% *}"
 
 		if [ "$hash" = "$thash" ]; then
 			# not modified
-			rm -f "$file" ||:
+			rm -f "$ROOT"/"$file" ||:
+		elif [ "$2" != "1" ]; then
+			echo "skipping $file (modified)"
 		fi
 	done < "$DATABASE"/filelist/"$1"
+
+	if [ "$2" = "1" ]; then return; fi
+	remove_package_files "$1" 1
 }
 
 install_package() {
@@ -429,16 +434,17 @@ install_package() {
 				owner="$(check_owner_of "$file")"
 				if [ -n "$owner" ] && [ "$owner" != "$package" ]; then
 					echo "$file: owned by $owner"
+
+					case ${ESSENTIALS:-"-"} in
+						*$owner*)
+							echo "...which is an essential package."
+							echo "quitting while we're ahead"
+							ERR="$file is from essential package $owner"
+							return
+							;;
+					esac
 				fi
 
-				case $ESSENTIALS in
-					*$owner*)
-						echo "...which is an essential package."
-						echo "quitting while we're ahead"
-						ERR="$file is from essential package $owner"
-						return
-						;;
-				esac
 
 				# TODO: skip over this if it's owned by another package
 				# check if it's the same
@@ -519,6 +525,49 @@ install_package() {
 	fi
 
 	cp -v "$TEMP"/.manifest "$DATABASE"/filelist/"$package"
+	sed -i "/^$package*$/d" "$DATABASE"/state ||:
+	echo "$package $version" >> "$DATABASE"/state
+}
+
+remove_package() {
+	# usage: remove_package <package>
+	# removes a package
+
+	if is_installed "$1"; then
+		remove_package_files "$1"
+		rm -f "$DATABASE"/filelist/"$1"
+		sed -i "/^$1*$/d" "$DATABASE"/state
+	fi
+}
+
+download_sources() {
+	for src in $(get_sources "$1"); do
+		# skip if it's already downloaded
+		if [ ! -e "$(get_source_destname "$1" "$src")" ]; then
+			download "$src" "$builddir/out/$(get_source_destname "$1" "$src")" "$(get_source_hash "$1" "$src")"
+			echo "$ERR"
+			if [ -n "$ERR" ]; then
+				echo "$ERR"
+				error "$ERR"
+			fi
+		else
+			cp -v "$(get_source_destname "$1" "$src")" "$builddir/src/$(get_source_destname "$1" "$src")"
+		fi
+		printf 'downloaded %s\n' "$(get_source_size "$1" "$link")"
+	done
+}
+
+build_from_scratch() {
+	# usage: build_from_scratch <package> <force ? 1 : undefined>
+
+	echo "building $1"
+	if is_installed "$1" && [ "$2" != "1" ]; then continue; fi
+
+	builddir="$(make_build_env "$1")"
+
+	download_sources "$1"
+
+	build "$1" "$builddir"
 }
 
 # main code starts here
@@ -529,27 +578,25 @@ set -ef
 # set colors if need be
 [ "$USE_COLOR" = 1 ] && log_left="\033[1;97m" log_mid="\033[0m\033[0;97m" log_right="\033[0m"
 
-for dep in $(resolve_depends zlib) zlib; do
-	echo "building $dep"
-	#if is_installed "$dep"; then continue; fi
+operation="$1"
+shift 1
 
-	builddir="$(make_build_env "$dep")"
-
-	for src in $(get_sources "$dep"); do
-		# skip if it's already downloaded
-		if [ ! -e "$(get_source_destname "$dep" "$src")" ]; then
-			download "$src" "$builddir/out/$(get_source_destname "$dep" "$src")" "$(get_source_hash "$dep" "$src")"
-			echo "$ERR"
-			if [ -n "$ERR" ]; then
-				echo "$ERR"
-				error "$ERR"
-			fi
-		else
-			cp -v "$(get_source_destname "$dep" "$src")" "$builddir/src/$(get_source_destname "$dep" "$src")"
-		fi
-		printf 'downloaded %s\n' "$(get_source_size "$dep" "$link")"
-	done
-
-#	build "$dep" "$builddir"
-	install_package "$dep-$(get_version "$dep").tar.gz"
-done
+case $operation in
+	i|install)
+		install_package "$1"
+		;;
+	u|r|remove|uninstall)
+		remove_package "$1"
+		;;
+	b|build)
+		for dep in $(resolve_depends "$1") "$1"; do
+			build_from_scratch "$dep"
+		done
+		;;
+	I|build-install)
+		for dep in $(resolve_depends "$1") "$1"; do
+			build_from_scratch "$dep"
+			install_package "$dep-$(get_version "$dep").tar.gz"
+		done
+		;;
+esac
