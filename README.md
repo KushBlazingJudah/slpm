@@ -10,6 +10,26 @@ Either way, it works on my machine.
 A long time ago, I wrote a package manager in POSIX sh.
 It wasn't great, no, but it worked. And now I want to do it right.
 
+## How to set it up
+`slpm` is still in a quite early stage but can be set up somewhat by creating a
+few folders.
+
+Namely, run `mkdir -p root/var/db/slpm/repo && mkdir -p root/var/db/slpm/filelist`
+and then `touch root/var/db/slpm/state`.
+
+Follow the section on how to create packages to create packages, and throw them
+into `root/var/db/slpm/repo` for it to work.
+
+You can then do one of 4 things as of writing:
+- `./slpm.sh b <package>` to build a package
+  - Might work.
+  - Outputs a tarball in the directory `slpm` was executed in.
+- `./slpm.sh I <package>` to build and then install a package
+  - Like `b`, it dumps its tarballs where you ran it.
+- `./slpm.sh i <tarball>` to install a tarball that was previously built
+- `./slpm.sh u <package>` to uninstall a package.
+  - Doesn't always work but sometimes it does.
+
 ## How to create packages
 Packages are very simple to create.
 
@@ -44,11 +64,14 @@ https://www.zlib.net/zlib-1.2.11.tar.xz	-	4ff941449631ace0d4d203e3483be9dbc9da45
 And now we're done.
 You can build and install this package, as long as the `build` script is executable and works.
 
+If your package has any dependencies, you can list them line-by-line in `depends`.
+
 ## TODO
 - [X] Dependency resolution (should be done)
 - [X] Downloading files (and verifying them)
 - [X] Building
   - Generates a tarball in current working directory for now.
+  - Environment is extremely leaky.
 - [X] Installing
 - [X] Uninstalling
 - [ ] Overwrite protection (hash old/new/current, compare?)
@@ -58,7 +81,7 @@ You can build and install this package, as long as the `build` script is executa
   - Make it look nice, both in the terminal and in the script.
 - [ ] Local sources from repository (for patches and the like)
 - [ ] Dependency detection (ldd)
-- [ ] Strip binaries
+- [X] Strip binaries
 - [ ] Finalized package standard
 - [ ] Code well commented
 - [ ] Able to manage itself

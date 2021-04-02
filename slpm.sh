@@ -281,12 +281,11 @@ build() {
 	echo "entering build environment"
 	(
 		cd "$builddir/src"
-		echo "extracting archives"
+		echo ">>> Extracting archives..."
 
 		# enable globs temporarily
 		set +f
 		for file in *; do
-			echo "checking $file"
 			[ -e "$file" ] || [ -L "$file" ] || continue
 			# this is a beautiful function that i stole from my .profile
 			# it was stolen earlier from somewhere else
@@ -308,14 +307,24 @@ build() {
 		done
 		set -f
 
-		echo "building"
-		if ! PKGSRC="$(pwd)" PKGOUT="$builddir/out" sh -e -- "$REPO_BASE/$package/build"; then
-			error "$package" "Build failed!"
-			error "$package" "Directory: $builddir"
-			exit 1
-		fi
+		echo ">>> Building..."
+		PKGSRC="$(pwd)" PKGOUT="$builddir/out" sh -e -- "$REPO_BASE/$package/build"
 
 		cd "$builddir/out"
+
+		# strip binaries if "$builddir/nostrip" doesn't exist
+		if [ ! -e "$builddir/nostrip" ]; then
+			find usr/lib -type f -name "*.a" \
+				-exec strip --strip-debug {} ';' 2>/dev/null
+
+			find lib usr/lib -type f -name "*.so*" ! -name "\*dbg" \
+				-exec strip --strip-unneeded {} ';' 2>/dev/null
+
+			find bin sbin usr/bin usr/sbin usr/libexec -type f \
+				-exec strip --strip-all {} ';' 2>/dev/null
+
+			find usr/lib usr/libexec -name "*.la" -delete 2>/dev/null
+		fi
 
 		# make .manifest
 		# tl;dr hash all files, save permissions
@@ -357,7 +366,11 @@ EOF
 		echo "$package $version" > .info
 
 		tar -czf "$here/$package-$version.tar.gz" .
-	)
+	) || {
+		error "$package" "Build failed!"
+		error "$package" "Directory: $builddir"
+		exit 1
+	}
 
 	rm -r "$builddir"
 }
@@ -365,6 +378,8 @@ EOF
 remove_package_files() {
 	# usage: remove_package_files <package>
 	# removes all files if not modified, deletes empty directories
+	# TODO: recursively delete empty directories
+	# that was the aim of the recursion hack but doesn't work well enough
 
 	while IFS=":" read -r file hash perms owner group; do
 		if [ "$hash" = "d" ]; then
@@ -414,7 +429,7 @@ install_package() {
 	notfound=""
 	while IFS=":" read -r file hash perms owner group; do
 		# TODO: this could go outside of where we want it to be
-		if [ "$hash" == "d" ]; then continue; fi
+		if [ "$hash" = "d" ]; then continue; fi
 
 		if [ -e "$TEMP/$file" ]; then
 			_hash="$(sha256sum -b "$TEMP/$file")"
@@ -525,8 +540,11 @@ install_package() {
 	fi
 
 	cp -v "$TEMP"/.manifest "$DATABASE"/filelist/"$package"
-	sed -i "/^$package*$/d" "$DATABASE"/state ||:
+	sed -i "/^$package/d" "$DATABASE"/state ||:
 	echo "$package $version" >> "$DATABASE"/state
+
+	rm -rf "$TEMP"
+	TEMP=""
 }
 
 remove_package() {
@@ -545,10 +563,10 @@ download_sources() {
 		# skip if it's already downloaded
 		if [ ! -e "$(get_source_destname "$1" "$src")" ]; then
 			download "$src" "$builddir/out/$(get_source_destname "$1" "$src")" "$(get_source_hash "$1" "$src")"
-			echo "$ERR"
 			if [ -n "$ERR" ]; then
-				echo "$ERR"
-				error "$ERR"
+				error "$1" "Failed to download sources: $ERR"
+				ERR=""
+				return
 			fi
 		else
 			cp -v "$(get_source_destname "$1" "$src")" "$builddir/src/$(get_source_destname "$1" "$src")"
@@ -561,7 +579,7 @@ build_from_scratch() {
 	# usage: build_from_scratch <package> <force ? 1 : undefined>
 
 	echo "building $1"
-	if is_installed "$1" && [ "$2" != "1" ]; then continue; fi
+	if is_installed "$1" && [ "$2" != "1" ]; then return; fi
 
 	builddir="$(make_build_env "$1")"
 
@@ -589,14 +607,45 @@ case $operation in
 		remove_package "$1"
 		;;
 	b|build)
-		for dep in $(resolve_depends "$1") "$1"; do
+		for dep in $(resolve_depends "$1"); do
 			build_from_scratch "$dep"
+
+			install_package "$dep-$(get_version "$dep").tar.gz"
+			if [ -n "$ERR" ]; then
+				error "$ERR"
+				return 1
+			fi
 		done
+		build_from_scratch "$1"
+		if [ -n "$ERR" ]; then
+			error "$ERR"
+			return 1
+		fi
 		;;
 	I|build-install)
 		for dep in $(resolve_depends "$1") "$1"; do
 			build_from_scratch "$dep"
+
 			install_package "$dep-$(get_version "$dep").tar.gz"
+			if [ -n "$ERR" ]; then
+				error "$ERR"
+				return 1
+			fi
 		done
 		;;
+	*)
+		cat <<EOF
+         __
+   _____/ /___  ____ ___
+  / ___/ / __ \\/ __ \`__ \\  slpm
+ (__  ) / /_/ / / / / / /  it's simply not good
+/____/_/ .___/_/ /_/ /_/   https://github.com/KushBlazingJudah/slpm
+      /_/
+
+options:
+	i|install <tarball>:	install a package
+	I|build-install <pkg>:	build and install a package
+	u|uninstall <pkg>:	uninstall a package
+	b|build <pkg>:		build a package
+EOF
 esac
