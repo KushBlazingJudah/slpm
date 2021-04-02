@@ -2,12 +2,47 @@
 The worst package manager you'll ever use.
 
 This is a package manager written **entirely in POSIX sh**.
+It might work in fully POSIX environments, it might not.
 
-**TODO**: write more
+Either way, it works on my machine.
 
 ## Why?
 A long time ago, I wrote a package manager in POSIX sh.
 It wasn't great, no, but it worked. And now I want to do it right.
+
+## How to create packages
+Packages are very simple to create.
+
+Say you want to port over `zlib`.
+You build `zlib` by running `./configure`, `make`, and `make install`, so create
+a `build` file which is an executable shell script.
+This is the most complicated part.
+
+```sh
+#!/bin/sh
+
+cd zlib-1.2.11
+./configure --prefix=/usr
+make
+make DESTDIR="$PKGOUT" install
+```
+
+We're targeting version `1.2.11`, so let's `echo "1.2.11" > version`.
+
+We need some sources, so let's make a `sources` file.
+The format is made up like this:
+```
+url	destination name (use "-" for autodetect)	sha256 hash	filesize (optional right now)
+```
+The spaces in between the entries aren't actually spaces, they're tabs.
+
+With that in mind, we could make a `sources` file for `zlib` like this:
+```
+https://www.zlib.net/zlib-1.2.11.tar.xz	-	4ff941449631ace0d4d203e3483be9dbc9da454084111f97ea0a2114e19bf066	467960
+```
+
+And now we're done.
+You can build and install this package, as long as the `build` script is executable and works.
 
 ## TODO
 - [X] Dependency resolution (should be done)
@@ -21,7 +56,9 @@ It wasn't great, no, but it worked. And now I want to do it right.
 - [ ] Repository syncing
 - [ ] Cleanup & refactor
   - Make it look nice, both in the terminal and in the script.
+- [ ] Local sources from repository (for patches and the like)
 - [ ] Dependency detection (ldd)
+- [ ] Strip binaries
 - [ ] Finalized package standard
 - [ ] Code well commented
 - [ ] Able to manage itself
