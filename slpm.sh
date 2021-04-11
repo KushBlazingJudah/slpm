@@ -304,7 +304,7 @@ set_alternative() {
 		fi
 	done < "$DATABASE/altdb"
 
-	mv "$TEMP" > "$DATABASE/altdb"
+	mv "$TEMP" "$DATABASE/altdb"
 
 	cp -vf "$DATABASE/alternatives/$package/$tpath" "$ROOT/$tpath"
 }
@@ -362,7 +362,7 @@ delete_alternative() {
 	rm -i "$DATABASE/alternatives/$package/$path"
 	rmdir "$DATABASE/alternatives/$package/$(dirname "$path")"
 
-	mv "$TEMP" > "$DATABASE/altdb"
+	mv "$TEMP" "$DATABASE/altdb"
 }
 # }
 
