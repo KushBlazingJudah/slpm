@@ -8,7 +8,16 @@ Either way, it works on my machine.
 
 ## Why?
 A long time ago, I wrote a package manager in POSIX sh.
-It wasn't great, no, but it worked. And now I want to do it right.
+It wasn't great, no, but it worked. And now I want to do it right, or better in
+some way.
+
+Currently, the only real motivation to even writing this is just to say that I
+wrote another package manager in shellscript, and maybe eventually an LFS
+system once I port enough packages and find the time to compile it.
+
+It probably won't replace my main setup (Gentoo) but if it becomes feasible I
+would consider it.
+It would take a while though.
 
 ## How to set it up
 `slpm` is still in a quite early stage but can be set up somewhat by creating a
@@ -66,7 +75,7 @@ You can build and install this package, as long as the `build` script is executa
 
 If your package has any dependencies, you can list them line-by-line in `depends`.
 
-## TODO
+## TODO (in order of importance mostly)
 - [X] Dependency resolution (should be done)
 - [X] Downloading files (and verifying them)
 - [X] Building
@@ -76,13 +85,15 @@ If your package has any dependencies, you can list them line-by-line in `depends
 - [X] Uninstalling
 - [ ] Overwrite protection (hash old/new/current, compare?)
   - Almost done, we check for it but error out if it fails.
-- [ ] Repository syncing
-- [ ] Cleanup & refactor
-  - Make it look nice, both in the terminal and in the script.
 - [ ] Packages with a lot of files take **forever** to generate a manifest for. Speed it up.
   - Try packaging Linux, and go for lunch when it's generating a manifest. It *might* be done then.
   - Possible methods include: "multithreading", faster hashing algorithm other than sha1
   - Could also just defer it to installation
+- [ ] Split building part into something else
+- [ ] Repository syncing
+- [ ] Cleanup & refactor
+  - Make it look nice, both in the terminal and in the script.
+  - Many things are probably done wrong. Do them more right.
 - [X] Local sources from repository (for patches and the like)
 - [ ] Dependency detection (ldd)
 - [X] Strip binaries

@@ -1,16 +1,19 @@
 #!/bin/sh
 # The worst package manager you'll ever use.
 
-ROOT="$(pwd)/root"
-DATABASE="$ROOT/var/db/slpm" # $(pwd) is for testing
+ROOT=${ROOT:-"/"}
+DATABASE="$ROOT/var/db/slpm"
 REPO_BASE="$DATABASE/repo"
+CACHE=${CACHE:-"$ROOT/var/cache/slpm"}
+DLCACHE="$CACHE/dl"
+BUILDCACHE="$CACHE/build"
 
 TEMP="" # used for when we exit
 ERR="" # used for error details
 
 # TODO: phase out in favour of a file that lists packages that every package
 # should expect
-#ESSENTIALS="musl"
+ESSENTIALS="musl"
 
 # { Logging
 log_left=""
@@ -152,11 +155,12 @@ check_owner_of() {
 
 	set +f
 	for pkg in "$DATABASE"/filelist/*; do
-		result="$(grep "^$file:" "$pkg" ||:)"
-		if [ -n "$result" ]; then
-			printf '%s' "$pkg"
-			return
-		fi
+		while IFS=":" read -r _file hash perms owner group; do
+			if [ "$file" = "$_file" ]; then
+				printf '%s' "${pkg##"$DATABASE/filelist/"}"
+				return
+			fi
+		done < "$pkg"
 	done
 	set -f
 }
@@ -170,15 +174,12 @@ get_packaged_hash() {
 
 	set +f
 	for pkg in "$DATABASE"/filelist/*; do
-		result="$(grep "^$file:" "$pkg" ||:)"
-		if [ -n "$result" ]; then
-			# we could do this better
-			IFS=":" read -r file hash perms owner group <<EOF
-$result
-EOF
-			printf '%s' "$hash"
-			return
-		fi
+		while IFS=":" read -r _file hash perms owner group; do
+			if [ "$file" = "$_file" ]; then
+				printf '%s' "${hash}"
+				return
+			fi
+		done < "$pkg"
 	done
 	set -f
 }
@@ -265,7 +266,7 @@ resolve_depends() {
 make_build_env() {
 	package="$1"
 
-	TEMP="$(mktemp -d -t slpm_build.XXXX --suffix="$package")"
+	TEMP="$(mktemp -d -t slpm_build.XXXX --suffix=-"$package")"
 	mkdir -p "$TEMP"/src
 	mkdir -p "$TEMP"/out
 
@@ -275,8 +276,8 @@ make_build_env() {
 build() {
 	package="$1"
 	builddir="$2"
-	here="$(pwd)"
 	version=$(get_version "$package")
+	dest=${3:-"$BUILDCACHE/$package-$version.tar.gz"}
 
 	echo "entering build environment"
 	(
@@ -363,7 +364,7 @@ build() {
 		# make .info file
 		echo "$package $version" > .info
 
-		tar -czf "$here/$package-$version.tar.gz" .
+		tar -czf "$dest" .
 	) || {
 		error "$package" "Build failed!"
 		error "$package" "Directory: $builddir"
@@ -391,7 +392,8 @@ remove_package_files() {
 		if [ "$hash" = "$thash" ]; then
 			# not modified
 			rm -f "$ROOT"/"$file" ||:
-		elif [ "$2" != "1" ]; then
+		elif [ -e "$ROOT/$ifle" ]; then
+			# echo it if the file exists and the above failed
 			echo "skipping $file (modified)"
 		fi
 	done < "$DATABASE"/filelist/"$1"
@@ -410,7 +412,7 @@ install_package() {
 	fi
 
 	# get a temporary directory
-	TEMP="$(mktemp -d -t --suffix=-"$package_tar" slpm.XXXXXX)"
+	TEMP="$(mktemp -d -t slpm.XXXXXX)"
 
 	# extract to it
 	tar -xpf "$package_tar" -C "$TEMP"
@@ -511,30 +513,8 @@ install_package() {
 		# remove old files
 		remove_package_files "$package"
 
-		# >inb4 don't repeat yourself
-		tar -xpf "$package_tar" -C "$TEMP" 2>/dev/null ||:
-
-		# lets move files
-		# create directories first
-		while IFS=":" read -r file hash perms owner group; do
-			if [ "$hash" = "d" ] && [ ! -d "$ROOT"/"$file" ]; then
-				mkdir "$ROOT"/"$file"
-				chmod "$perms" "$ROOT"/"$file"
-				chown "$owner" "$ROOT"/"$file"
-				chgrp "$group" "$ROOT"/"$file"
-			fi
-		done < "$TEMP"/.manifest
-
-		# move files
-		while IFS=":" read -r file hash perms owner group; do
-			if [ "$hash" != "d" ]; then
-				# TODO: we don't check if files collide here
-				mv -vf "$TEMP"/"$file" "$ROOT"/"$file"
-				chmod "$perms" "$ROOT"/"$file"
-				chown "$owner" "$ROOT"/"$file"
-				chgrp "$group" "$ROOT"/"$file"
-			fi
-		done < "$TEMP"/.manifest
+		# TODO: here, we should be reinstalling to make sure that everything
+		# is okay, but right now we don't
 	fi
 
 	cp -v "$TEMP"/.manifest "$DATABASE"/filelist/"$package"
@@ -559,17 +539,30 @@ remove_package() {
 download_sources() {
 	for src in $(get_sources "$1"); do
 		# skip if it's already downloaded
-		if [ ! -e "$(get_source_destname "$1" "$src")" ]; then
+		destname="$(get_source_destname "$1" "$src")"
+
+		# make sure were using the right file if it's cached
+		if [ -e "$DLCACHE/$destname" ]; then
+			sha=$(sha1sum -b "$DLCACHE/$destname")
+			newhash="${sha%% *}"
+			if [ "$(get_source_hash "$1" "src")" = "$newhash" ]; then
+				echo "invalid cached \"$destname\", removing"
+				rm -v "$DLCACHE/$destname"
+			fi
+		fi
+
+		if [ ! -e "$DLCACHE/$destname" ]; then
 			protocol="${src%%://*}"
 			if [ "$protocol" = "local" ]; then
-				cp -v "$REPO_BASE"/"$1"/"${src##local://}" "$builddir/src/$(get_source_destname "$1" "$src")"
+				cp -v "$REPO_BASE"/"$1"/"${src##local://}" "$builddir/src/$destname"
 			else
-				download "$src" "$builddir/src/$(get_source_destname "$1" "$src")" "$(get_source_hash "$1" "$src")"
+				download "$src" "$DLCACHE/$destname" "$(get_source_hash "$1" "$src")"
 				if [ -n "$ERR" ]; then
 					error "$1" "Failed to download sources: $ERR"
 					ERR=""
 					return
 				fi
+				cp -v "$DLCACHE/$destname" "$builddir/src/$destname"
 			fi
 		else
 			cp -v "$(get_source_destname "$1" "$src")" "$builddir/src/$(get_source_destname "$1" "$src")"
@@ -629,7 +622,7 @@ case $operation in
 		for dep in $(resolve_depends "$1") "$1"; do
 			build_from_scratch "$dep"
 
-			install_package "$dep-$(get_version "$dep").tar.gz"
+			install_package "$BUILDCACHE/$dep-$(get_version "$dep").tar.gz"
 			if [ -n "$ERR" ]; then
 				error "$ERR"
 				exit 1
