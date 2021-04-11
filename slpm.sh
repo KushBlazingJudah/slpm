@@ -402,6 +402,30 @@ remove_package_files() {
 	remove_package_files "$1" 1
 }
 
+place_files() {
+	# usage: place_files <from>
+	# this is used only for install_package
+	while IFS=":" read -r file hash perms owner group; do
+		if [ "$hash" = "d" ] && [ ! -d "$ROOT"/"$file" ]; then
+			mkdir "$ROOT"/"$file"
+			chmod "$perms" "$ROOT"/"$file"
+			chown "$owner" "$ROOT"/"$file"
+			chgrp "$group" "$ROOT"/"$file"
+		fi
+	done < "$1"/.manifest
+
+	# move files
+	while IFS=":" read -r file hash perms owner group; do
+		if [ "$hash" != "d" ]; then
+			# TODO: we don't check if files collide here
+			mv -vf "$1"/"$file" "$ROOT"/"$file"
+			chmod "$perms" "$ROOT"/"$file"
+			chown "$owner" "$ROOT"/"$file"
+			chgrp "$group" "$ROOT"/"$file"
+		fi
+	done < "$1"/.manifest
+}
+
 install_package() {
 	# usage: install_package <path to tarball>
 	package_tar="$1"
@@ -488,38 +512,28 @@ install_package() {
 	done < "$TEMP"/.manifest
 
 	# lets move files
-	# create directories first
-	while IFS=":" read -r file hash perms owner group; do
-		if [ "$hash" = "d" ] && [ ! -d "$ROOT"/"$file" ]; then
-			mkdir "$ROOT"/"$file"
-			chmod "$perms" "$ROOT"/"$file"
-			chown "$owner" "$ROOT"/"$file"
-			chgrp "$group" "$ROOT"/"$file"
-		fi
-	done < "$TEMP"/.manifest
-
-	# move files
-	while IFS=":" read -r file hash perms owner group; do
-		if [ "$hash" != "d" ]; then
-			# TODO: we don't check if files collide here
-			mv -vf "$TEMP"/"$file" "$ROOT"/"$file"
-			chmod "$perms" "$ROOT"/"$file"
-			chown "$owner" "$ROOT"/"$file"
-			chgrp "$group" "$ROOT"/"$file"
-		fi
-	done < "$TEMP"/.manifest
+	place_files "$TEMP"
 
 	if is_installed "$package"; then
-		# remove old files
-		remove_package_files "$package"
+		# if we are installing the same package over ourselves, skip
+		# we would cause problems, as something might not be available
+		# for a moment
+		# NOTE: things will still go missing if some of the package
+		# remained the same, e.g. bin/true changed but not bin/false
+		# but at least it will get replaced
+		if ! diff "$TEMP/.manifest" "$DATABASE/filelist/$package" >/dev/null; then
+			# remove old files
+			remove_package_files "$package"
 
-		# TODO: here, we should be reinstalling to make sure that everything
-		# is okay, but right now we don't
+			# i wish we didn't need to do this
+			tar -xpf "$package_tar" -C "$TEMP"
+			place_files "$TEMP"
+		fi
 	fi
 
-	cp -v "$TEMP"/.manifest "$DATABASE"/filelist/"$package"
-	sed -i "/^$package/d" "$DATABASE"/state ||:
-	echo "$package $version" >> "$DATABASE"/state
+	cp -v "$TEMP"/.manifest "$DATABASE/filelist/$package"
+	sed -i "/^$package/d" "$DATABASE/state" ||:
+	echo "$package $version" >> "$DATABASE/state"
 
 	rm -rf "$TEMP"
 	TEMP=""
