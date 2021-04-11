@@ -17,7 +17,7 @@ ESSENTIALS="musl"
 
 # { Logging
 log_left=""
-log_mid="->\t"
+log_mid="\t->\t"
 log_right=""
 log () {
 	# usage: log <left column> <message>
@@ -26,11 +26,11 @@ log () {
 }
 
 info () {
-	log "info" "$@"
+	log "info" "$*"
 }
 
 error () {
-	log "error" "$@"
+	log "error" "$*"
 }
 # }
 
@@ -392,7 +392,7 @@ remove_package_files() {
 		if [ "$hash" = "$thash" ]; then
 			# not modified
 			rm -f "$ROOT"/"$file" ||:
-		elif [ -e "$ROOT/$ifle" ]; then
+		elif [ -e "$ROOT/$file" ]; then
 			# echo it if the file exists and the above failed
 			echo "skipping $file (modified)"
 		fi
