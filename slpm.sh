@@ -34,6 +34,68 @@ error () {
 }
 # }
 
+# { Utilities
+# i would like to thank dylan araps for providing this for me to steal
+dirname() {
+	# Usage: dirname "path"
+
+	# If '$1' is empty set 'dir' to '.', else '$1'.
+	dir=${1:-.}
+
+	# Strip all trailing forward-slashes '/' from
+	# the end of the string.
+	#
+	# "${dir##*[!/]}": Remove all non-forward-slashes
+	# from the start of the string, leaving us with only
+	# the trailing slashes.
+	# "${dir%%"${}"}": Remove the result of the above
+	# substitution (a string of forward slashes) from the
+	# end of the original string.
+	dir=${dir%%"${dir##*[!/]}"}
+
+	# If the variable *does not* contain any forward slashes
+	# set its value to '.'.
+	[ "${dir##*/*}" ] && dir=.
+
+	# Remove everything *after* the last forward-slash '/'.
+	dir=${dir%/*}
+
+	# Again, strip all trailing forward-slashes '/' from
+	# the end of the string (see above).
+	dir=${dir%%"${dir##*[!/]}"}
+
+	# Print the resulting string and if it is empty,
+	# print '/'.
+	printf '%s\n' "${dir:-/}"
+}
+
+basename() {
+    # Usage: basename "path" ["suffix"]
+
+    # Strip all trailing forward-slashes '/' from
+    # the end of the string.
+    #
+    # "${1##*[!/]}": Remove all non-forward-slashes
+    # from the start of the string, leaving us with only
+    # the trailing slashes.
+    # "${1%%"${}"}:  Remove the result of the above
+    # substitution (a string of forward slashes) from the
+    # end of the original string.
+    dir=${1%${1##*[!/]}}
+
+    # Remove everything before the final forward-slash '/'.
+    dir=${dir##*/}
+
+    # If a suffix was passed to the function, remove it from
+    # the end of the resulting string.
+    dir=${dir%"$2"}
+
+    # Print the resulting string and if it is empty,
+    # print '/'.
+    printf '%s\n' "${dir:-/}"
+}
+# }
+
 # { Package information
 is_installed() {
 	# the easiest way to do this is to check if it's in the file list
@@ -182,6 +244,125 @@ get_packaged_hash() {
 		done < "$pkg"
 	done
 	set -f
+}
+# }
+
+# { Alternatives
+
+is_alternative() {
+	# usage: is_alternative <path>
+	# checks if <path> is an alternative, and if it is, return 0 and print
+	# the name of the package that is providing <path>
+
+	tpath="$1"
+
+	while IFS=":" read -r active package path; do
+		if [ "$tpath" != "$path" ]; then continue; fi
+		if [ "$active" = "y" ]; then
+			printf '%s' "$package"
+			return 0
+		fi
+	done < "$DATABASE/altdb"
+
+	return 1
+}
+
+get_alternatives() {
+	# usage: get_alternatives <path>
+	# if any alternatives exist, print the package names out
+
+	tpath="$1"
+
+	while IFS=":" read -r active package path; do
+		if [ "$tpath" != "$path" ]; then continue; fi
+		printf '%s\n' "$package"
+	done < "$DATABASE/altdb"
+}
+
+set_alternative() {
+	# usage: set_alternative <path> <package>
+	# record <package> as being <path>'s alternative in altdb
+	# NOTE: this does not switch on it's own, use switch_alternative if
+	# that's what you're looking for
+
+	tpath="$1"
+	package="$2"
+	current="$(is_alternative "$package")"
+
+	# HACK: we reconstruct the file on the fly
+	TEMP="$(mktemp)"
+	while IFS=":" read -r active _package path; do
+		if [ "$tpath" != "$path" ]; then
+			printf '%s:%s:%s\n' "$active" "$_package" "$path" >> "$TEMP"
+			continue
+		fi
+
+		if [ "$_package" = "$current" ]; then
+			printf 'n:%s:%s\n' "$_package" "$path" >> "$TEMP"
+		elif [ "$_package" = "$package" ]; then
+			printf 'y:%s:%s\n' "$_package" "$path" >> "$TEMP"
+		fi
+	done < "$DATABASE/altdb"
+
+	mv "$TEMP" > "$DATABASE/altdb"
+
+	cp -vf "$DATABASE/alternatives/$package/$tpath" "$ROOT/$tpath"
+}
+
+add_alternative() {
+	# usage: add_alternative <alternative> <path> <package>
+	# copies <alternative> to $DATABASE/alternatives/<package>/<path>
+	# and adds a line in $DATABASE/altdb
+
+	alternative="$1"
+	path="$2"
+	package="$3"
+
+	if [ -e "$DATABASE/alternatives/$package/$path" ]; then
+		cp -v "$ROOT/$path" "$DATABASE/alternative/$package/$path"
+		return
+	fi
+
+	mkdir -pv "$DATABASE/alternatives/$package/$(dirname "$path")"
+	cp -v "$ROOT/$path" "$DATABASE/alternative/$package/$path"
+	printf 'y:%s:%s\n' "$package" "$path"
+}
+
+switch_alternative() {
+	# usage: switch_alternative <path> <package>
+	# if <path> isn't an alternative, make it an alternative
+	# then unset the current alternative for the new one
+
+	path="$1"
+	package="$2"
+	current="$(is_alternative "$package")"
+
+	if [ -z "$current" ]; then
+		ERR="nothing is providing \"$path\""
+		return 1
+	fi
+
+}
+
+delete_alternative() {
+	# usage: delete_alternative <path> <package>
+	# removes an alternative from altdb and deletes it from
+	# $DATABASE/alternatives
+
+	path="$1"
+	package="$2"
+
+	TEMP="$(mktemp)"
+	while IFS=":" read -r active _package _path; do
+		if [ "$path" != "$_path" ] || [ "$package" != "$_package" ]; then
+			printf '%s:%s:%s\n' "$active" "$_package" "$_path" >> "$TEMP"
+		fi
+	done < "$DATABASE/altdb"
+
+	rm -i "$DATABASE/alternatives/$package/$path"
+	rmdir "$DATABASE/alternatives/$package/$(dirname "$path")"
+
+	mv "$TEMP" > "$DATABASE/altdb"
 }
 # }
 
