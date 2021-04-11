@@ -79,9 +79,16 @@ If your package has any dependencies, you can list them line-by-line in `depends
 - [ ] Repository syncing
 - [ ] Cleanup & refactor
   - Make it look nice, both in the terminal and in the script.
-- [ ] Local sources from repository (for patches and the like)
+- [ ] Packages with a lot of files take **forever** to generate a manifest for. Speed it up.
+  - Try packaging Linux, and go for lunch when it's generating a manifest. It *might* be done then.
+  - Possible methods include: "multithreading", faster hashing algorithm other than sha1
+  - Could also just defer it to installation
+- [X] Local sources from repository (for patches and the like)
 - [ ] Dependency detection (ldd)
 - [X] Strip binaries
 - [ ] Finalized package standard
+  - The package standard is largely done and what's there will probably not change.
+  However, there are still more things that need to be done.
+- [ ] Database locking
 - [ ] Code well commented
 - [ ] Able to manage itself

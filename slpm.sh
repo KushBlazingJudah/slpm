@@ -197,7 +197,7 @@ download() {
 	curl -o "$TEMP" "$source"
 
 	# get hash
-	sha=$(sha256sum -b "$TEMP")
+	sha=$(sha1sum -b "$TEMP")
 	newhash="${sha%% *}"
 
 	# compare it, move if good
@@ -328,39 +328,37 @@ build() {
 
 		# make .manifest
 		# tl;dr hash all files, save permissions
-		hashes=""
-		while read -r line; do
-			file="${line##./}"
-			_hash="$(sha256sum -b "$file")"
-			hash="${_hash%% *}"
+		echo ">>> Creating manifest..."
 
-			# this is probably overengineered
-			perms="$(stat -c %a "$file")"
-			owner="$(stat -c %u "$file")"
-			group="$(stat -c %g "$file")"
+		dohash() {
+			find . -mindepth 1 -type f | while read -r line; do
+				file="${line##./}"
+				_hash="$(sha1sum -b "$file")"
+				hash="${_hash%% *}"
 
-			hashes="${hashes:+$hashes
-}$file:$hash:$perms:$owner:$group"
-		done <<EOF
-$(find . -mindepth 1 -type f)
-EOF
+				# this is probably overengineered
+				perms="$(stat -c %a "$file")"
+				owner="$(stat -c %u "$file")"
+				group="$(stat -c %g "$file")"
 
-		# get all directories
-		while read -r line; do
-			file="${line##./}"
+				printf '%s:%s:%s:%s:%s\n' "$file" "$hash" "$perms" "$owner" "$group"
+			done
 
-			# this is probably overengineered
-			perms="$(stat -c %a "$file")"
-			owner="$(stat -c %u "$file")"
-			group="$(stat -c %g "$file")"
+			# get all directories
+			find . -mindepth 1 -type d | while read -r line; do
+				file="${line##./}"
 
-			hashes="${hashes:+$hashes
-}$file:d:$perms:$owner:$group"
-		done <<EOF
-$(find . -mindepth 1 -type d)
-EOF
+				# this is probably overengineered
+				perms="$(stat -c %a "$file")"
+				owner="$(stat -c %u "$file")"
+				group="$(stat -c %g "$file")"
 
-		echo "$hashes" > .manifest
+				printf '%s:d:%s:%s:%s\n' "$file" "$perms" "$owner" "$group"
+			done
+		}
+
+		# lol
+		dohash | sed '/^\./d' > "$builddir"/out/.manifest
 
 		# make .info file
 		echo "$package $version" > .info
@@ -387,7 +385,7 @@ remove_package_files() {
 			continue
 		fi
 
-		_hash="$(sha256sum -b "$ROOT/$file" 2>/dev/null ||:)"
+		_hash="$(sha1sum -b "$ROOT/$file" 2>/dev/null ||:)"
 		thash="${_hash%% *}"
 
 		if [ "$hash" = "$thash" ]; then
@@ -432,7 +430,7 @@ install_package() {
 		if [ "$hash" = "d" ]; then continue; fi
 
 		if [ -e "$TEMP/$file" ]; then
-			_hash="$(sha256sum -b "$TEMP/$file")"
+			_hash="$(sha1sum -b "$TEMP/$file")"
 			thash="${_hash%% *}"
 			if [ "$thash" != "$hash" ]; then
 				echo "$file: hashes don't match"
@@ -463,7 +461,7 @@ install_package() {
 
 				# TODO: skip over this if it's owned by another package
 				# check if it's the same
-				_ehash="$(sha256sum -b "$ROOT"/"$file")"
+				_ehash="$(sha1sum -b "$ROOT"/"$file")"
 				ehash="${_ehash%% *}"
 
 				# otherwise, error
@@ -562,11 +560,16 @@ download_sources() {
 	for src in $(get_sources "$1"); do
 		# skip if it's already downloaded
 		if [ ! -e "$(get_source_destname "$1" "$src")" ]; then
-			download "$src" "$builddir/out/$(get_source_destname "$1" "$src")" "$(get_source_hash "$1" "$src")"
-			if [ -n "$ERR" ]; then
-				error "$1" "Failed to download sources: $ERR"
-				ERR=""
-				return
+			protocol="${src%%://*}"
+			if [ "$protocol" = "local" ]; then
+				cp -v "$REPO_BASE"/"$1"/"${src##local://}" "$builddir/src/$(get_source_destname "$1" "$src")"
+			else
+				download "$src" "$builddir/src/$(get_source_destname "$1" "$src")" "$(get_source_hash "$1" "$src")"
+				if [ -n "$ERR" ]; then
+					error "$1" "Failed to download sources: $ERR"
+					ERR=""
+					return
+				fi
 			fi
 		else
 			cp -v "$(get_source_destname "$1" "$src")" "$builddir/src/$(get_source_destname "$1" "$src")"
@@ -629,7 +632,7 @@ case $operation in
 			install_package "$dep-$(get_version "$dep").tar.gz"
 			if [ -n "$ERR" ]; then
 				error "$ERR"
-				return 1
+				exit 1
 			fi
 		done
 		;;
