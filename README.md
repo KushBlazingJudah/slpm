@@ -85,6 +85,10 @@ If your package has any dependencies, you can list them line-by-line in `depends
 - [X] Uninstalling
 - [ ] Overwrite protection (hash old/new/current, compare?)
   - Almost done, we check for it but error out if it fails.
+  - Also handle `/etc`
+- [ ] Alternatives
+  - Almost done, we add it to a database, and remove it upon uninstall.
+  - It has not been tested much.
 - [ ] Packages with a lot of files take **forever** to generate a manifest for. Speed it up.
   - Try packaging Linux, and go for lunch when it's generating a manifest. It *might* be done then.
   - Possible methods include: "multithreading", faster hashing algorithm other than sha1

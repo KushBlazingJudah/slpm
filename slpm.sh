@@ -8,7 +8,6 @@ CACHE=${CACHE:-"$ROOT/var/cache/slpm"}
 DLCACHE="$CACHE/dl"
 BUILDCACHE="$CACHE/build"
 
-TEMP="" # used for when we exit
 ERR="" # used for error details
 
 # TODO: phase out in favour of a file that lists packages that every package
@@ -252,19 +251,18 @@ get_packaged_hash() {
 is_alternative() {
 	# usage: is_alternative <path>
 	# checks if <path> is an alternative, and if it is, return 0 and print
-	# the name of the package that is providing <path>
+	# the name of the tpackage that is providing <path>
 
 	tpath="$1"
 
-	while IFS=":" read -r active package path; do
+	while IFS=":" read -r active tpackage path; do
+		echo "$active $tpackage $path $tpath" 1>&2
 		if [ "$tpath" != "$path" ]; then continue; fi
 		if [ "$active" = "y" ]; then
-			printf '%s' "$package"
-			return 0
+			printf '%s' "$tpackage"
+			return
 		fi
 	done < "$DATABASE/altdb"
-
-	return 1
 }
 
 get_alternatives() {
@@ -273,9 +271,9 @@ get_alternatives() {
 
 	tpath="$1"
 
-	while IFS=":" read -r active package path; do
+	while IFS=":" read -r active tpackage path; do
 		if [ "$tpath" != "$path" ]; then continue; fi
-		printf '%s\n' "$package"
+		printf '%s\n' "$tpackage"
 	done < "$DATABASE/altdb"
 }
 
@@ -286,46 +284,50 @@ set_alternative() {
 	# that's what you're looking for
 
 	tpath="$1"
-	package="$2"
-	current="$(is_alternative "$package")"
+	tpackage="$2"
+	current="$(is_alternative "$tpath")"
 
 	# HACK: we reconstruct the file on the fly
-	TEMP="$(mktemp)"
-	while IFS=":" read -r active _package path; do
-		if [ "$tpath" != "$path" ]; then
-			printf '%s:%s:%s\n' "$active" "$_package" "$path" >> "$TEMP"
-			continue
-		fi
+	if [ -n "$current" ]; then
+		TEMP="$(mktemp)"
+		while IFS=":" read -r active _tpackage path; do
+			if [ "$tpath" != "$path" ]; then
+				printf '%s:%s:%s\n' "$active" "$_tpackage" "$path" >> "$TEMP"
+				continue
+			fi
 
-		if [ "$_package" = "$current" ]; then
-			printf 'n:%s:%s\n' "$_package" "$path" >> "$TEMP"
-		elif [ "$_package" = "$package" ]; then
-			printf 'y:%s:%s\n' "$_package" "$path" >> "$TEMP"
-		fi
-	done < "$DATABASE/altdb"
+			if [ "$_tpackage" = "$current" ]; then
+				printf 'n:%s:%s\n' "$_tpackage" "$path" >> "$TEMP"
+			elif [ "$_tpackage" = "$tpackage" ]; then
+				printf 'y:%s:%s\n' "$_tpackage" "$path" >> "$TEMP"
+			fi
+		done < "$DATABASE/altdb"
 
-	mv "$TEMP" "$DATABASE/altdb"
+		mv "$TEMP" "$DATABASE/altdb"
+	else
+		printf 'y:%s:%s\n' "$tpackage" "tpath" >> "$TEMP"
+	fi
 
-	cp -vf "$DATABASE/alternatives/$package/$tpath" "$ROOT/$tpath"
+	cp -vf "$DATABASE/alternatives/$tpackage/$tpath" "$ROOT/$tpath"
 }
 
 add_alternative() {
 	# usage: add_alternative <alternative> <path> <package>
-	# copies <alternative> to $DATABASE/alternatives/<package>/<path>
+	# copies <alternative> to $DATABASE/alternatives/<tpackage>/<path>
 	# and adds a line in $DATABASE/altdb
 
 	alternative="$1"
 	path="$2"
-	package="$3"
+	tpackage="$3"
 
-	if [ -e "$DATABASE/alternatives/$package/$path" ]; then
-		cp -v "$ROOT/$path" "$DATABASE/alternative/$package/$path"
+	if [ -e "$DATABASE/alternatives/$tpackage/$path" ]; then
+		cp -v "$alternative" "$DATABASE/alternatives/$tpackage/$path"
 		return
 	fi
 
-	mkdir -pv "$DATABASE/alternatives/$package/$(dirname "$path")"
-	cp -v "$ROOT/$path" "$DATABASE/alternative/$package/$path"
-	printf 'y:%s:%s\n' "$package" "$path"
+	mkdir -pv "$DATABASE/alternatives/$tpackage/$(dirname "$path")"
+	cp -v "$alternative" "$DATABASE/alternatives/$tpackage/$path"
+	printf 'n:%s:%s\n' "$tpackage" "$path" >> "$DATABASE/altdb"
 }
 
 switch_alternative() {
@@ -333,15 +335,17 @@ switch_alternative() {
 	# if <path> isn't an alternative, make it an alternative
 	# then unset the current alternative for the new one
 
-	path="$1"
-	package="$2"
-	current="$(is_alternative "$package")"
+	tpackage="$2"
+	current="$(is_alternative "$1")"
 
 	if [ -z "$current" ]; then
-		ERR="nothing is providing \"$path\""
+		ERR="nothing is providing \"$1\""
 		return 1
 	fi
 
+	set_alternative "$1" "$2"
+	echo "set $tpackage as provider for $1"
+	cp -v "$DATABASE/alternatives/$tpackage/$1" "$ROOT/$1"
 }
 
 delete_alternative() {
@@ -350,17 +354,37 @@ delete_alternative() {
 	# $DATABASE/alternatives
 
 	path="$1"
-	package="$2"
+	tpackage="$2"
 
 	TEMP="$(mktemp)"
-	while IFS=":" read -r active _package _path; do
-		if [ "$path" != "$_path" ] || [ "$package" != "$_package" ]; then
-			printf '%s:%s:%s\n' "$active" "$_package" "$_path" >> "$TEMP"
+	while IFS=":" read -r active _tpackage _path; do
+		if [ "$path" != "$_path" ] || [ "$tpackage" != "$_tpackage" ]; then
+			printf '%s:%s:%s\n' "$active" "$_tpackage" "$_path" >> "$TEMP"
 		fi
 	done < "$DATABASE/altdb"
 
-	rm -i "$DATABASE/alternatives/$package/$path"
-	rmdir "$DATABASE/alternatives/$package/$(dirname "$path")"
+	rm -i "$DATABASE/alternatives/$tpackage/$path"
+	rmdir "$DATABASE/alternatives/$tpackage/$(dirname "$path")"
+
+	mv "$TEMP" "$DATABASE/altdb"
+}
+
+delete_alternatives() {
+	# usage: delete_alternatives <tpackage>
+	# removes all alternatives of a package from altdb
+
+	path="$1"
+	tpackage="$2"
+
+	TEMP="$(mktemp)"
+	while IFS=":" read -r active _tpackage _path; do
+		if [ "$tpackage" != "$_tpackage" ]; then
+			printf '%s:%s:%s\n' "$active" "$_tpackage" "$_path" >> "$TEMP"
+		fi
+	done < "$DATABASE/altdb"
+
+	rm -i "$DATABASE/alternatives/$tpackage/$path" 2>&1 >/dev/null ||:
+	rmdir "$DATABASE/alternatives/$tpackage/$(dirname "$path")" 2>&1 2>/dev/null ||:
 
 	mv "$TEMP" "$DATABASE/altdb"
 }
@@ -508,6 +532,9 @@ build() {
 			find usr/lib usr/libexec -name "*.la" -delete 2>/dev/null
 		fi
 
+		# we don't need these files
+		rm -rf "$builddir/out/usr/share/info"
+
 		# make .manifest
 		# tl;dr hash all files, save permissions
 		echo ">>> Creating manifest..."
@@ -578,6 +605,8 @@ remove_package_files() {
 			echo "skipping $file (modified)"
 		fi
 	done < "$DATABASE"/filelist/"$1"
+
+	delete_alternatives "$1"
 
 	if [ "$2" = "1" ]; then return; fi
 	remove_package_files "$1" 1
@@ -655,14 +684,26 @@ install_package() {
 				if [ -n "$owner" ] && [ "$owner" != "$package" ]; then
 					echo "$file: owned by $owner"
 
-					case ${ESSENTIALS:-"-"} in
-						*$owner*)
-							echo "...which is an essential package."
-							echo "quitting while we're ahead"
-							ERR="$file is from essential package $owner"
-							return
+					case $file in
+						bin/*|sbin/*|usr/bin/*|usr/sbin/*)
+							# alternatives
+							echo "adding $file owned by $owner as an alternative"
+							add_alternative "$ROOT/$file" "$file" "$owner"
+							set_alternative "$file" "$owner"
+							echo "adding the new $file owned by $package as an alternative"
+							add_alternative "$TEMP/$file" "$file" "$package"
 							;;
+						*)
+							case ${ESSENTIALS:-"-"} in
+								*$owner*)
+									echo "...which is an essential package."
+									echo "quitting while we're ahead"
+									ERR="$file is from essential package $owner"
+									return
+									;;
+							esac
 					esac
+
 				fi
 
 
@@ -760,7 +801,7 @@ download_sources() {
 				cp -v "$DLCACHE/$destname" "$builddir/src/$destname"
 			fi
 		else
-			cp -v "$(get_source_destname "$1" "$src")" "$builddir/src/$(get_source_destname "$1" "$src")"
+			cp -v "$DLCACHE/$destname" "$builddir/src/$destname"
 		fi
 		printf 'downloaded %s\n' "$(get_source_size "$1" "$link")"
 	done
@@ -824,6 +865,9 @@ case $operation in
 			fi
 		done
 		;;
+	a|alt)
+		switch_alternative "$1" "$2"
+		;;
 	*)
 		cat <<EOF
          __
@@ -838,5 +882,6 @@ options:
 	I|build-install <pkg>:	build and install a package
 	u|uninstall <pkg>:	uninstall a package
 	b|build <pkg>:		build a package
+	a|alt <file> <pkg>:	switch out one version of a program for another
 EOF
 esac
