@@ -287,25 +287,30 @@ set_alternative() {
 	tpackage="$2"
 	current="$(is_alternative "$tpath")"
 
+	if [ "$current" = "$tpackage" ]; then
+		ERR="$current is already providing $tpath"
+		return
+	fi
+
 	# HACK: we reconstruct the file on the fly
 	if [ -n "$current" ]; then
-		TEMP="$(mktemp)"
+		_temp="$(mktemp)"
 		while IFS=":" read -r active _tpackage path; do
 			if [ "$tpath" != "$path" ]; then
-				printf '%s:%s:%s\n' "$active" "$_tpackage" "$path" >> "$TEMP"
+				printf '%s:%s:%s\n' "$active" "$_tpackage" "$path" >> "$_temp"
 				continue
 			fi
 
 			if [ "$_tpackage" = "$current" ]; then
-				printf 'n:%s:%s\n' "$_tpackage" "$path" >> "$TEMP"
+				printf 'n:%s:%s\n' "$_tpackage" "$path" >> "$_temp"
 			elif [ "$_tpackage" = "$tpackage" ]; then
-				printf 'y:%s:%s\n' "$_tpackage" "$path" >> "$TEMP"
+				printf 'y:%s:%s\n' "$_tpackage" "$path" >> "$_temp"
 			fi
 		done < "$DATABASE/altdb"
 
-		mv "$TEMP" "$DATABASE/altdb"
+		mv "$_temp" "$DATABASE/altdb"
 	else
-		printf 'y:%s:%s\n' "$tpackage" "tpath" >> "$TEMP"
+		printf 'y:%s:%s\n' "$tpackage" "$tpath" >> "$DATABASE/altdb"
 	fi
 
 	cp -vf "$DATABASE/alternatives/$tpackage/$tpath" "$ROOT/$tpath"
@@ -356,17 +361,17 @@ delete_alternative() {
 	path="$1"
 	tpackage="$2"
 
-	TEMP="$(mktemp)"
+	_temp="$(mktemp)"
 	while IFS=":" read -r active _tpackage _path; do
 		if [ "$path" != "$_path" ] || [ "$tpackage" != "$_tpackage" ]; then
-			printf '%s:%s:%s\n' "$active" "$_tpackage" "$_path" >> "$TEMP"
+			printf '%s:%s:%s\n' "$active" "$_tpackage" "$_path" >> "$_temp"
 		fi
 	done < "$DATABASE/altdb"
 
 	rm -i "$DATABASE/alternatives/$tpackage/$path"
 	rmdir "$DATABASE/alternatives/$tpackage/$(dirname "$path")"
 
-	mv "$TEMP" "$DATABASE/altdb"
+	mv "$_temp" "$DATABASE/altdb"
 }
 
 delete_alternatives() {
@@ -376,17 +381,17 @@ delete_alternatives() {
 	path="$1"
 	tpackage="$2"
 
-	TEMP="$(mktemp)"
+	_temp="$(mktemp)"
 	while IFS=":" read -r active _tpackage _path; do
 		if [ "$tpackage" != "$_tpackage" ]; then
-			printf '%s:%s:%s\n' "$active" "$_tpackage" "$_path" >> "$TEMP"
+			printf '%s:%s:%s\n' "$active" "$_tpackage" "$_path" >> "$_temp"
 		fi
 	done < "$DATABASE/altdb"
 
-	rm -i "$DATABASE/alternatives/$tpackage/$path" 2>&1 >/dev/null ||:
-	rmdir "$DATABASE/alternatives/$tpackage/$(dirname "$path")" 2>&1 2>/dev/null ||:
+	rm -i "$DATABASE/alternatives/$tpackage/$path" >/dev/null 2>&1 ||:
+	rmdir "$DATABASE/alternatives/$tpackage/$(dirname "$path")" >/dev/null 2>&1 ||:
 
-	mv "$TEMP" "$DATABASE/altdb"
+	mv "$_temp" "$DATABASE/altdb"
 }
 # }
 
@@ -686,12 +691,13 @@ install_package() {
 
 					case $file in
 						bin/*|sbin/*|usr/bin/*|usr/sbin/*)
+							# TODO: respect existing settings
 							# alternatives
 							echo "adding $file owned by $owner as an alternative"
 							add_alternative "$ROOT/$file" "$file" "$owner"
-							set_alternative "$file" "$owner"
-							echo "adding the new $file owned by $package as an alternative"
+							echo "setting the new $file owned by $package as an alternative"
 							add_alternative "$TEMP/$file" "$file" "$package"
+							set_alternative "$file" "$package"
 							;;
 						*)
 							case ${ESSENTIALS:-"-"} in
